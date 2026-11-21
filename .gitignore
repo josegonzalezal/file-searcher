@@ -1,0 +1,15 @@
+target/
+*.log
+*.class
+*.jar
+!**/src/**/target/
+
+# Eclipse & IDE metadata
+.metadata/
+.project
+.classpath
+.settings/
+*.tmp
+*.bak
+*.swp
+*~
