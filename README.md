@@ -15,7 +15,7 @@ Desktop file search and duplicate detection utility built with Java 21, Swing, a
 
 ### Running the Portable Release (Recommended)
 - **Operating System**: Windows (x64) for the bundled Windows runtime, or Linux/macOS with a compatible Java 21 runtime when using `launch.sh`.
-- **Java**: Not required on Windows if using the bundled `portable-runtime` directory; otherwise **Java 21** is required.
+- **Java**: Not required on Windows if using the bundled `portable-runtime` or `file-searcher-1.0.0` directory; otherwise **Java 21** is required.
 
 ### Building from Source
 - **Java**: 21
