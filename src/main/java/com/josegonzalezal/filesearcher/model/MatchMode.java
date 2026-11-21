@@ -3,6 +3,9 @@ package com.josegonzalezal.filesearcher.model;
 public enum MatchMode {
     CONTAINS("Name contains"),
     EXACT("Exact name"),
+    STARTS_WITH("Starts with"),
+    ENDS_WITH("Ends with"),
+    WILDCARD("Wildcard (*, ?)"),
     REGEX("Regular expression");
 
     private final String label;

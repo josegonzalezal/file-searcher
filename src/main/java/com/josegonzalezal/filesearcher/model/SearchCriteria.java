@@ -8,17 +8,15 @@ import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-/**
- * Encapsulates validated search roots and filter rules.
- */
 public final class SearchCriteria {
 
     private final List<Path> roots;
     private final SearchTarget target;
     private final String nameQuery;
     private final MatchMode matchMode;
+    private final boolean literalName;
     private final boolean caseSensitive;
-    private final Pattern compiledRegex;
+    private final Pattern compiledPattern;
     private final Set<String> allowedExtensions;
     private final Long minSizeBytes;
     private final Long maxSizeBytes;
@@ -30,8 +28,9 @@ public final class SearchCriteria {
         this.target = builder.target;
         this.nameQuery = builder.nameQuery;
         this.matchMode = builder.matchMode;
+        this.literalName = builder.literalName;
         this.caseSensitive = builder.caseSensitive;
-        this.compiledRegex = builder.compiledRegex;
+        this.compiledPattern = builder.compiledPattern;
         this.allowedExtensions = Collections.unmodifiableSet(builder.allowedExtensions);
         this.minSizeBytes = builder.minSizeBytes;
         this.maxSizeBytes = builder.maxSizeBytes;
@@ -53,6 +52,10 @@ public final class SearchCriteria {
 
     public MatchMode getMatchMode() {
         return matchMode;
+    }
+
+    public boolean isLiteralName() {
+        return literalName;
     }
 
     public boolean isCaseSensitive() {
@@ -91,6 +94,15 @@ public final class SearchCriteria {
         if (nameQuery == null || nameQuery.isEmpty()) {
             return true;
         }
+        if (entryName == null) {
+            return false;
+        }
+        if (literalName) {
+            if (caseSensitive) {
+                return entryName.contains(nameQuery);
+            }
+            return entryName.toLowerCase(Locale.ROOT).contains(nameQuery.toLowerCase(Locale.ROOT));
+        }
         return switch (matchMode) {
             case CONTAINS -> {
                 if (caseSensitive) {
@@ -104,7 +116,19 @@ public final class SearchCriteria {
                 }
                 yield entryName.equalsIgnoreCase(nameQuery);
             }
-            case REGEX -> compiledRegex != null && compiledRegex.matcher(entryName).matches();
+            case STARTS_WITH -> {
+                if (caseSensitive) {
+                    yield entryName.startsWith(nameQuery);
+                }
+                yield entryName.toLowerCase(Locale.ROOT).startsWith(nameQuery.toLowerCase(Locale.ROOT));
+            }
+            case ENDS_WITH -> {
+                if (caseSensitive) {
+                    yield entryName.endsWith(nameQuery);
+                }
+                yield entryName.toLowerCase(Locale.ROOT).endsWith(nameQuery.toLowerCase(Locale.ROOT));
+            }
+            case WILDCARD, REGEX -> compiledPattern != null && compiledPattern.matcher(entryName).matches();
         };
     }
 
@@ -131,13 +155,30 @@ public final class SearchCriteria {
         return true;
     }
 
+    private static String wildcardToRegex(String wildcard) {
+        StringBuilder sb = new StringBuilder("^");
+        for (int i = 0; i < wildcard.length(); i++) {
+            char c = wildcard.charAt(i);
+            if (c == '*') {
+                sb.append(".*");
+            } else if (c == '?') {
+                sb.append('.');
+            } else {
+                sb.append(Pattern.quote(String.valueOf(c)));
+            }
+        }
+        sb.append("$");
+        return sb.toString();
+    }
+
     public static final class Builder {
         private List<Path> roots = List.of();
         private SearchTarget target = SearchTarget.BOTH;
         private String nameQuery = "";
         private MatchMode matchMode = MatchMode.CONTAINS;
+        private boolean literalName = false;
         private boolean caseSensitive = false;
-        private Pattern compiledRegex;
+        private Pattern compiledPattern;
         private Set<String> allowedExtensions = Set.of();
         private Long minSizeBytes;
         private Long maxSizeBytes;
@@ -155,12 +196,17 @@ public final class SearchCriteria {
         }
 
         public Builder nameQuery(String nameQuery) {
-            this.nameQuery = nameQuery != null ? nameQuery.trim() : "";
+            this.nameQuery = nameQuery != null ? nameQuery : "";
             return this;
         }
 
         public Builder matchMode(MatchMode matchMode) {
             this.matchMode = matchMode != null ? matchMode : MatchMode.CONTAINS;
+            return this;
+        }
+
+        public Builder literalName(boolean literalName) {
+            this.literalName = literalName;
             return this;
         }
 
@@ -215,9 +261,15 @@ public final class SearchCriteria {
             if (minSizeBytes != null && maxSizeBytes != null && minSizeBytes > maxSizeBytes) {
                 throw new IllegalArgumentException("Minimum file size cannot exceed maximum file size.");
             }
-            if (matchMode == MatchMode.REGEX && !nameQuery.isEmpty()) {
+            String effectiveQuery = literalName ? nameQuery : nameQuery.trim();
+            this.nameQuery = effectiveQuery;
+            if (!literalName && !effectiveQuery.isEmpty()) {
                 int flags = caseSensitive ? 0 : Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE;
-                this.compiledRegex = Pattern.compile(nameQuery, flags);
+                if (matchMode == MatchMode.REGEX) {
+                    this.compiledPattern = Pattern.compile(effectiveQuery, flags);
+                } else if (matchMode == MatchMode.WILDCARD) {
+                    this.compiledPattern = Pattern.compile(wildcardToRegex(effectiveQuery), flags);
+                }
             }
             return new SearchCriteria(this);
         }
