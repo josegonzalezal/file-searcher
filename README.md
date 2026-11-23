@@ -50,22 +50,26 @@ Please read these warnings before running scans or deleting files:
 ## Requirements
 
 ### Running the Portable Release (Recommended)
+
 - **Operating System:** Windows (x64) for the bundled Windows runtime, or Linux/macOS with a compatible Java runtime when using `launch.sh`.
 - **Java:** Bundled in the portable runtime package (no separate Java installation required when using the included runtime), or a compatible Java runtime if running the JAR directly.
 
 ### Building from Source
+
 - **Java:** 21 (`maven.compiler.release` is configured for Java 21)
 - **Maven:** 3.9+ (or an IDE with Maven support)
 
 ## Usage
 
 ### 1. Download and Extract the Release Archive
+
 1. Download the release archive (for example, `file-searcher-1.0.5.zip` or your platform release zip) from the **Releases** section.
 2. Extract it **once** into a clean destination folder (for example, `C:\Tools\FileSearcher\`). Avoid extracting into a duplicate nested folder path.
 
 ### 2. Launch the Application
 
 #### On Windows
+
 Run `launch.bat` from the portable folder:
 
 ```cmd
@@ -73,6 +77,7 @@ launch.bat
 ```
 
 #### On Linux / macOS
+
 Make `launch.sh` executable and run it from the script's directory:
 
 ```bash
@@ -81,6 +86,7 @@ chmod +x launch.sh
 ```
 
 ### 3. Building and Running with Maven (Optional)
+
 From the project root directory:
 
 ```bash
@@ -90,11 +96,13 @@ mvn clean package
 ## Guide: How to Use File Searcher
 
 ### Root Source Directories (**Search Roots**)
+
 - The **Search Roots** panel lists folders and drives to scan (such as your user folder or drives like `C:\`, `D:\`, `E:\`).
 - Use **Add Folder...** to add a directory or **Remove** to remove a listed entry.
 - **Which roots get scanned:** If you highlight/select one or more roots in the list, only those selected roots are scanned; if no root is selected, all listed roots are scanned.
 
 ### Folder & File Search (**Find Files / Folders**)
+
 Set **Mode** to **Find Files / Folders** and configure your filters under **Search & Filter Options**:
 
 - **Name / Pattern + Match Mode:** Choose how **Name / Pattern** is evaluated—such as **Name contains** (`CONTAINS`), **Exact name** (`EXACT`), **Starts with** (`STARTS_WITH`), **Ends with** (`ENDS_WITH`), **Wildcard (`*`, `?`)** (`WILDCARD`), or **Regular expression** (`REGEX`). Surrounding spaces are trimmed when literal mode is off.
@@ -111,6 +119,7 @@ Set **Mode** to **Find Files / Folders** and configure your filters under **Sear
 Click **Search** to start or **Cancel** to stop an active scan.
 
 ### Duplicate File Search (**Find Duplicates**)
+
 Set **Mode** to **Find Duplicates** to locate duplicate files across your target roots:
 
 1. Select your **Search Roots** and any optional filters (**Name / Pattern**, **Literal**, **Min Size / Max Size**, **Extensions**, **Case sensitive**, **Include hidden**, **Skip symlinks**, **Cap results**).
@@ -118,6 +127,7 @@ Set **Mode** to **Find Duplicates** to locate duplicate files across your target
 3. Click **Find Duplicates** to scan and group matching files (or **Cancel** to abort).
 
 #### How Each Duplicate Search Method Works
+
 - **File size only (fastest):** Groups candidate files that share the exact same byte length without reading full file contents—fastest for quick passes, though files with the same size aren't guaranteed to be byte-for-byte identical.
 - **Hash-based algorithms (`SHA-256`, `SHA-1`, `MD5`):** Narrows candidates by file size and computes content digests so files with matching hashes have identical byte contents (with `SHA-256` offering the strongest collision resistance and `MD5`/`SHA-1` being legacy hash options).
 
