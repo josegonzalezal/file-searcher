@@ -728,7 +728,7 @@ public final class MainFrame extends JFrame {
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
 
-        JLabel titleLabel = new JLabel(AppConfig.APP_NAME + " v1.0.5");
+        JLabel titleLabel = new JLabel(AppConfig.APP_NAME + " v1.0.6");
         titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD, 14f));
         titleLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 
@@ -789,48 +789,64 @@ public final class MainFrame extends JFrame {
         ThemePalette palette = ThemePalette.fromDarkMode(darkMode);
 
         String helpText = """
-                FILE SEARCHER - QUICK REFERENCE
+                FILE SEARCHER - QUICK REFERENCE & WARNINGS
 
-                1. MODES
-                   - Find Files / Folders: Search directories by name, pattern, type, size, or extension.
-                   - Find Duplicates: Group matching files by hash (SHA-256, SHA-1, MD5) and filter
-                     results using the active criteria before inspecting or cleaning up copies.
+                1. IMPORTANT WARNINGS & LIMITATIONS
+                   - Large Directories & RAM: Scanning entire drives (e.g., C:\\ or /) or huge folders
+                     can consume high RAM and CPU, especially in Find Duplicates mode. Target specific
+                     subdirectories and use size/extension filters whenever possible.
+                   - Display & System Limits: Results are capped by default (10,000 rows) to keep the UI
+                     responsive. Protected OS folders may trigger AccessDeniedException entries.
+                   - Permanent Deletion: Delete Selected permanently removes files from disk without
+                     moving them to the Recycle Bin or Trash. This cannot be undone.
+                   - File Size Only Caution: "File size only (fastest)" groups files solely by byte
+                     length without checking contents. Never delete files under this mode without
+                     verifying contents or running SHA-256, SHA-1, or MD5.
+                   - Symbolic Links & Locked Files: Keep Skip symlinks enabled to avoid duplicate trees
+                     or infinite loops. Files locked by the OS or other apps will be skipped.
+                   - Local & Offline: Runs 100% locally with no network access, telemetry, or cloud sync.
 
-                2. SEARCH ROOTS
-                   - Add Folder... / Remove: Manage the list of target directories to scan.
-                   - Root selection: Highlight one or more roots to scan only those, or leave none
+                2. MODES & DUPLICATE ALGORITHMS
+                   - Find Files / Folders: Search directories by name, pattern, target, size, or extension.
+                   - Find Duplicates: Group matching files using:
+                     * File size only (fastest): Matches identical byte length only.
+                     * SHA-256 / SHA-1 / MD5: Verifies identical byte contents via cryptographic hash.
+
+                3. SEARCH ROOTS
+                   - Add Folder... / Remove: Manage target directories to scan.
+                   - Root Selection: Highlight one or more roots to scan only those, or leave none
                      selected to scan all listed roots.
 
-                3. NAME MATCHING & LITERAL MODE
-                   - Literal: OFF: Uses the selected Match mode (Name contains, Exact name, Starts with,
+                4. NAME MATCHING & LITERAL MODE
+                   - Name / Pattern: Evaluates a single pattern (use Regular expression with | to match
+                     multiple terms, e.g., invoice|receipt).
+                   - Literal: OFF: Applies the selected Match mode (Name contains, Exact name, Starts with,
                      Ends with, Wildcard (*, ?), or Regular expression) and trims surrounding spaces.
-                   - Literal: ON: Disables pattern matching and searches the exact text entered in
-                     Name / Pattern (preserving leading or trailing spaces).
-                   - Case sensitive: Applies case sensitivity to name and pattern checks.
+                   - Literal: ON: Treats Name / Pattern as exact plain text, preserving leading and
+                     trailing spaces.
+                   - Case sensitive: Makes name and pattern checks case-sensitive.
 
-                4. TARGET, SIZE, EXTENSIONS & FLAGS
-                   - Target: Filter by Files, Folders, or Both (in standard search).
-                   - Min Size / Max Size: Supports units like B, KB, MB, GB, and TB (e.g., 500B, 10KB, 5MB).
-                   - Extensions: Comma-separated list without leading dots (e.g., pdf, jpg, txt).
-                   - Include hidden / Skip symlinks: Control whether hidden entries or symbolic links
-                     are traversed or included.
-                   - Cap results: Limits displayed rows to the configured display cap for responsiveness.
+                5. TARGET, SIZE, EXTENSIONS & FLAGS
+                   - Target: Filter by Files only, Folders only, or Both.
+                   - Min Size / Max Size: Enter one size value per box using B, KB, MB, GB, or TB
+                     (e.g., Min Size: 64B, Max Size: 2KB). Leave blank for no bound.
+                   - Extensions: Separate multiple extensions with semicolons (;), commas (,), or
+                     spaces (e.g., jpg; png; docx or pdf, txt, csv). Leading dots are optional.
+                   - Include hidden / Skip symlinks / Cap results: Control hidden items, symbolic links,
+                     and the displayed row cap.
 
-                5. RESULTS, DUPLICATES & EXPORT
-                   - Open / Open Folder / Copy Path: Available via action buttons, double-click, or
-                     right-click context menu (supports multi-row path copy).
-                   - Select Duplicates: In Duplicate mode, selects extra copies while leaving the first
-                     entry of each group unselected.
-                   - Delete Selected: Permanently deletes selected duplicate files only after verifying
-                     at least one copy in every affected group remains unselected.
-                   - Export CSV / Export TXT / Clear Results: Export or clear the active mode's table.
-
-                6. STATUS & LOGS
-                   - Progress & status bar: Shows scan phase, counts, cancellation state, or display cap.
-                   - Export Log / Clear Log: Save the log buffer to .log/.txt or clear the log view.
+                6. RESULTS, DUPLICATES & LOGS
+                   - Open File / Open Folder / Copy Path: Available via buttons, double-click, or
+                     right-click context menu (supports copying multiple selected paths).
+                   - Select Duplicates: Selects extra copies in each group while leaving the first copy
+                     unselected.
+                   - Delete Selected: Permanently deletes selected files only after verifying at least
+                     one copy in every affected group remains unselected.
+                   - Export CSV / Export TXT / Clear Results: Export or clear the active table.
+                   - Export Log / Clear Log: Save logs to .log/.txt or clear the log panel.
                 """;
 
-        JTextArea area = new JTextArea(helpText, 26, 74);
+        JTextArea area = new JTextArea(helpText, 28, 76);
         area.setEditable(false);
         area.setLineWrap(true);
         area.setWrapStyleWord(true);
@@ -839,9 +855,10 @@ public final class MainFrame extends JFrame {
         area.setForeground(palette.textPrimary());
         area.setCaretColor(palette.textPrimary());
         area.setBorder(BorderFactory.createEmptyBorder(10, 12, 10, 12));
+        area.setCaretPosition(0);
 
         JScrollPane scroll = new JScrollPane(area);
-        scroll.setPreferredSize(new Dimension(740, 500));
+        scroll.setPreferredSize(new Dimension(760, 520));
         scroll.setBorder(BorderFactory.createLineBorder(palette.borderColor(), 1));
         scroll.getViewport().setBackground(palette.inputBg());
 
