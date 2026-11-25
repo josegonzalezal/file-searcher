@@ -2,7 +2,7 @@ package com.josegonzalezal.filesearcher.ui;
 
 import com.josegonzalezal.filesearcher.config.AppConfig;
 import com.josegonzalezal.filesearcher.config.LogManager;
-import com.josegonzalezal.filesearcher.config.ThemePreferences;
+import com.josegonzalezal.filesearcher.config.UserPreferences;
 import com.josegonzalezal.filesearcher.model.DuplicateGroup;
 import com.josegonzalezal.filesearcher.model.HashAlgorithm;
 import com.josegonzalezal.filesearcher.model.MatchMode;
@@ -25,6 +25,8 @@ import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.FontMetrics;
 import java.awt.Graphics;
+import java.awt.GraphicsDevice;
+import java.awt.GraphicsEnvironment;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
@@ -34,16 +36,22 @@ import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.security.CodeSource;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -99,7 +107,7 @@ import javax.swing.table.TableColumnModel;
 public final class MainFrame extends JFrame {
 
     private static final long serialVersionUID = 1L;
-    private static final String GITHUB_URL = "https://github.com/josegonzalezal/";
+    private static final String GITHUB_URL = AppConfig.GITHUB_URL;
 
     private static final String MODE_SEARCH = "Find Files / Folders";
     private static final String MODE_DUPLICATES = "Find Duplicates";
@@ -114,7 +122,7 @@ public final class MainFrame extends JFrame {
 
     private final AppConfig config;
     private final LogManager logManager;
-    private final ThemePreferences themePreferences = new ThemePreferences();
+    private final UserPreferences userPreferences = new UserPreferences();
     private final FileSystemScannerService scannerService;
     private final DuplicateDetectorService duplicateService;
     private final FileActionService fileActionService;
@@ -196,6 +204,7 @@ public final class MainFrame extends JFrame {
 
     private final AtomicBoolean activeCancelFlag = new AtomicBoolean(false);
     private SwingWorker<?, ?> activeWorker = null;
+    private HashAlgorithm lastDuplicateAlgorithm;
     private boolean darkMode;
 
     public MainFrame(AppConfig config, LogManager logManager) {
@@ -207,26 +216,68 @@ public final class MainFrame extends JFrame {
         this.fileActionService = new FileActionService(logManager);
         this.reportExportService = new ReportExportService(logManager);
 
-        this.darkMode = themePreferences.isDarkMode();
-        this.skipSymlinksCheck.setSelected(config.isSkipSymbolicLinks());
-        this.includeHiddenCheck.setSelected(config.isIncludeHidden());
-        this.enforceLimitCheck.setSelected(config.isEnforceDisplayLimit());
+        UserPreferences.SessionState saved = userPreferences.load();
+        this.darkMode = saved.darkMode();
+        this.skipSymlinksCheck.setSelected(saved.skipSymlinks());
+        this.includeHiddenCheck.setSelected(saved.includeHidden());
+        this.enforceLimitCheck.setSelected(saved.capResults());
         this.hashAlgoCombo.setSelectedItem(config.getDefaultHashAlgorithm());
 
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setMinimumSize(new Dimension(1024, 680));
         setSize(1200, 780);
         setLocationRelativeTo(null);
+        applySavedWindowBounds(saved);
 
         initComponents();
+        applySavedSession(saved);
         wireEvents();
-        loadInitialRoots();
+        loadInitialRoots(saved);
         attachLogListener();
         syncModeUI();
         syncLiteralModeState();
         applyTheme(this.darkMode, false);
+        updateDeleteButtonState(false);
+
+        addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                persistSession();
+            }
+        });
 
         logManager.info("Application initialized (Java " + System.getProperty("java.version") + ").");
+    }
+
+    private void applySavedWindowBounds(UserPreferences.SessionState saved) {
+        if (saved == null) {
+            return;
+        }
+        Dimension minSize = getMinimumSize();
+        Integer savedW = saved.windowWidth();
+        Integer savedH = saved.windowHeight();
+        if (savedW != null && savedH != null && savedW > 0 && savedH > 0) {
+            setSize(Math.max(minSize.width, savedW), Math.max(minSize.height, savedH));
+        }
+
+        Integer savedX = saved.windowX();
+        Integer savedY = saved.windowY();
+        if (savedX != null && savedY != null && isBoundsVisibleOnAnyScreen(savedX, savedY, getWidth(), getHeight())) {
+            setLocation(savedX, savedY);
+        } else {
+            setLocationRelativeTo(null);
+        }
+    }
+
+    private static boolean isBoundsVisibleOnAnyScreen(int x, int y, int width, int height) {
+        Rectangle windowRect = new Rectangle(x, y, Math.max(100, width), Math.max(100, height));
+        for (GraphicsDevice device : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
+            Rectangle bounds = device.getDefaultConfiguration().getBounds();
+            if (bounds.intersects(windowRect)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean isDuplicatesMode() {
@@ -285,6 +336,7 @@ public final class MainFrame extends JFrame {
             int idx = rootsList.getSelectedIndex();
             if (idx >= 0) {
                 rootsListModel.remove(idx);
+                persistSession();
             }
         });
 
@@ -304,7 +356,7 @@ public final class MainFrame extends JFrame {
 
         namePatternField.setToolTipText("Name or pattern (e.g. report, *.pdf, ^IMG_\\d+)");
         literalNameBtn.setToolTipText("Skip patterns and match literal text");
-        extensionsField.setToolTipText("Comma-separated extensions without dot, e.g. pdf, jpg, txt");
+        extensionsField.setToolTipText("Extensions separated by comma, semicolon, or space (e.g. pdf, jpg, txt)");
         minSizeField.setToolTipText("e.g. 500B, 10KB, 5MB, 1GB");
         maxSizeField.setToolTipText("e.g. 50MB, 2GB");
 
@@ -440,8 +492,15 @@ public final class MainFrame extends JFrame {
     }
 
     private void wireEvents() {
-        modeCombo.addActionListener(e -> syncModeUI());
-        literalNameBtn.addActionListener(e -> syncLiteralModeState());
+        modeCombo.addActionListener(e -> {
+            syncModeUI();
+            persistSession();
+        });
+        literalNameBtn.addActionListener(e -> {
+            syncLiteralModeState();
+            persistSession();
+        });
+        hashAlgoCombo.addActionListener(e -> persistSession());
 
         startSearchBtn.addActionListener(e -> startSearch());
         cancelSearchBtn.addActionListener(e -> cancelActiveTask());
@@ -483,7 +542,7 @@ public final class MainFrame extends JFrame {
     private void applyTheme(boolean dark, boolean persist) {
         this.darkMode = dark;
         if (persist) {
-            themePreferences.setDarkMode(dark);
+            persistSession();
         }
 
         ThemePalette palette = ThemePalette.fromDarkMode(dark);
@@ -728,14 +787,14 @@ public final class MainFrame extends JFrame {
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
         panel.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
 
-        JLabel titleLabel = new JLabel(AppConfig.APP_NAME + " v1.0.6");
+        JLabel titleLabel = new JLabel(AppConfig.APP_NAME + " v" + AppConfig.VERSION);
         titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD, 14f));
         titleLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         JLabel descLabel = new JLabel("Multi-root file search and duplicate detector utility.");
         descLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-        JLabel authorLabel = new JLabel("Author: José González Alonso");
+        JLabel authorLabel = new JLabel("Author: " + AppConfig.AUTHOR_NAME);
         authorLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         JPanel githubRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
@@ -755,18 +814,56 @@ public final class MainFrame extends JFrame {
         githubRow.add(githubPrefixLabel);
         githubRow.add(githubUrlLabel);
 
+        String javaVersion = System.getProperty("java.version", "unknown");
+        String javaBuild = System.getProperty("java.runtime.version",
+                System.getProperty("java.vm.version", "unknown"));
+        JLabel runtimeLabel = new JLabel("Java " + javaVersion + " (" + javaBuild + ")");
+        runtimeLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        JLabel jarHashLabel = new JLabel("JAR SHA-256: " + computeCurrentJarSha256());
+        jarHashLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+
         panel.add(titleLabel);
         panel.add(new JLabel(" "));
         panel.add(descLabel);
         panel.add(authorLabel);
         panel.add(new JLabel(" "));
         panel.add(githubRow);
+        panel.add(new JLabel(" "));
+        panel.add(runtimeLabel);
+        panel.add(jarHashLabel);
 
         JOptionPane.showMessageDialog(
                 this,
                 panel,
                 "About - " + AppConfig.APP_NAME,
                 JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private String computeCurrentJarSha256() {
+        try {
+            CodeSource codeSource = MainFrame.class.getProtectionDomain().getCodeSource();
+            if (codeSource == null || codeSource.getLocation() == null) {
+                return "N/A (no code source)";
+            }
+            Path location = Path.of(codeSource.getLocation().toURI());
+            if (!Files.isRegularFile(location)
+                    || !location.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".jar")) {
+                return "N/A (running from classes directory)";
+            }
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[AppConfig.STREAM_BUFFER_SIZE];
+            try (InputStream in = Files.newInputStream(location)) {
+                int read;
+                while ((read = in.read(buffer)) != -1) {
+                    digest.update(buffer, 0, read);
+                }
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (Exception ex) {
+            logManager.warn("Could not compute JAR SHA-256: " + ex.getMessage());
+            return "Unavailable";
+        }
     }
 
     private void openGitHubUrl() {
@@ -798,10 +895,8 @@ public final class MainFrame extends JFrame {
                    - Display & System Limits: Results are capped by default (10,000 rows) to keep the UI
                      responsive. Protected OS folders may trigger AccessDeniedException entries.
                    - Permanent Deletion: Delete Selected permanently removes files from disk without
-                     moving them to the Recycle Bin or Trash. This cannot be undone.
-                   - File Size Only Caution: "File size only (fastest)" groups files solely by byte
-                     length without checking contents. Never delete files under this mode without
-                     verifying contents or running SHA-256, SHA-1, or MD5.
+                     moving them to the Recycle Bin or Trash. This cannot be undone. Deletion is
+                     disabled after size-only or head/tail scans; use SHA-256 or MD5 first.
                    - Symbolic Links & Locked Files: Keep Skip symlinks enabled to avoid duplicate trees
                      or infinite loops. Files locked by the OS or other apps will be skipped.
                    - Local & Offline: Runs 100% locally with no network access, telemetry, or cloud sync.
@@ -809,8 +904,9 @@ public final class MainFrame extends JFrame {
                 2. MODES & DUPLICATE ALGORITHMS
                    - Find Files / Folders: Search directories by name, pattern, target, size, or extension.
                    - Find Duplicates: Group matching files using:
-                     * File size only (fastest): Matches identical byte length only.
-                     * SHA-256 / SHA-1 / MD5: Verifies identical byte contents via cryptographic hash.
+                     * File size only (fastest): Matches identical byte length only (delete disabled).
+                     * Size + Head/Tail hash (fast): Fast content hint (delete disabled).
+                     * SHA-256 / MD5: Verifies identical byte contents via cryptographic hash.
 
                 3. SEARCH ROOTS
                    - Add Folder... / Remove: Manage target directories to scan.
@@ -840,8 +936,8 @@ public final class MainFrame extends JFrame {
                      right-click context menu (supports copying multiple selected paths).
                    - Select Duplicates: Selects extra copies in each group while leaving the first copy
                      unselected.
-                   - Delete Selected: Permanently deletes selected files only after verifying at least
-                     one copy in every affected group remains unselected.
+                   - Delete Selected: Permanently deletes selected files (not folders) after a SHA-256
+                     or MD5 scan, and only if at least one copy in every group remains unselected.
                    - Export CSV / Export TXT / Clear Results: Export or clear the active table.
                    - Export Log / Clear Log: Save logs to .log/.txt or clear the log panel.
                 """;
@@ -1076,18 +1172,28 @@ public final class MainFrame extends JFrame {
         statusLabel.setText("Log screen cleared.");
     }
 
-    private void loadInitialRoots() {
+    private void loadInitialRoots(UserPreferences.SessionState saved) {
         Set<String> initial = new LinkedHashSet<>();
-        String userHome = System.getProperty("user.home");
-        if (userHome != null && !userHome.isBlank()) {
-            Path homePath = Path.of(userHome);
-            if (Files.isDirectory(homePath)) {
-                initial.add(homePath.toAbsolutePath().toString());
+        if (saved != null) {
+            for (String root : saved.roots()) {
+                Path path = Path.of(root);
+                if (Files.isDirectory(path)) {
+                    initial.add(path.toAbsolutePath().toString());
+                }
             }
         }
-        for (File root : File.listRoots()) {
-            if (root != null && root.exists()) {
-                initial.add(root.getAbsolutePath());
+        if (initial.isEmpty()) {
+            String userHome = System.getProperty("user.home");
+            if (userHome != null && !userHome.isBlank()) {
+                Path homePath = Path.of(userHome);
+                if (Files.isDirectory(homePath)) {
+                    initial.add(homePath.toAbsolutePath().toString());
+                }
+            }
+            for (File root : File.listRoots()) {
+                if (root != null && root.exists()) {
+                    initial.add(root.getAbsolutePath());
+                }
             }
         }
         for (String path : initial) {
@@ -1096,6 +1202,84 @@ public final class MainFrame extends JFrame {
         if (!rootsListModel.isEmpty()) {
             rootsList.setSelectedIndex(0);
         }
+    }
+
+    private void applySavedSession(UserPreferences.SessionState saved) {
+        if (saved == null) {
+            return;
+        }
+        namePatternField.setText(saved.namePattern());
+        extensionsField.setText(saved.extensions());
+        minSizeField.setText(saved.minSize());
+        maxSizeField.setText(saved.maxSize());
+        literalNameBtn.setSelected(saved.literalName());
+        caseSensitiveCheck.setSelected(saved.caseSensitive());
+        selectComboByName(matchModeCombo, saved.matchMode());
+        selectComboByName(targetCombo, saved.searchTarget());
+        selectComboByName(hashAlgoCombo, saved.hashAlgorithm());
+        if (MODE_DUPLICATES.equals(saved.mode()) || MODE_SEARCH.equals(saved.mode())) {
+            modeCombo.setSelectedItem(saved.mode());
+        }
+    }
+
+    private static <T extends Enum<T>> void selectComboByName(JComboBox<T> combo, String name) {
+        if (name == null || name.isBlank()) {
+            return;
+        }
+        for (int i = 0; i < combo.getItemCount(); i++) {
+            T item = combo.getItemAt(i);
+            if (item.name().equals(name)) {
+                combo.setSelectedItem(item);
+                return;
+            }
+        }
+    }
+
+    private void persistSession() {
+        List<String> roots = new ArrayList<>();
+        for (int i = 0; i < rootsListModel.size(); i++) {
+            roots.add(rootsListModel.get(i));
+        }
+        MatchMode matchMode = (MatchMode) matchModeCombo.getSelectedItem();
+        SearchTarget target = (SearchTarget) targetCombo.getSelectedItem();
+        HashAlgorithm algorithm = (HashAlgorithm) hashAlgoCombo.getSelectedItem();
+
+        boolean isIconified = (getExtendedState() & JFrame.ICONIFIED) != 0;
+        Integer winW = isIconified ? null : getWidth();
+        Integer winH = isIconified ? null : getHeight();
+        Integer winX = isIconified ? null : getX();
+        Integer winY = isIconified ? null : getY();
+
+        userPreferences.save(new UserPreferences.SessionState(
+                darkMode,
+                roots,
+                namePatternField.getText(),
+                matchMode != null ? matchMode.name() : "",
+                literalNameBtn.isSelected(),
+                target != null ? target.name() : "",
+                extensionsField.getText(),
+                minSizeField.getText(),
+                maxSizeField.getText(),
+                caseSensitiveCheck.isSelected(),
+                includeHiddenCheck.isSelected(),
+                skipSymlinksCheck.isSelected(),
+                enforceLimitCheck.isSelected(),
+                algorithm != null ? algorithm.name() : "",
+                isDuplicatesMode() ? MODE_DUPLICATES : MODE_SEARCH,
+                winW,
+                winH,
+                winX,
+                winY));
+    }
+
+    private void updateDeleteButtonState(boolean busy) {
+        boolean allowed = !busy
+                && lastDuplicateAlgorithm != null
+                && lastDuplicateAlgorithm.allowsPermanentDeletion();
+        deleteSelectedDupBtn.setEnabled(allowed);
+        deleteSelectedDupBtn.setToolTipText(allowed
+                ? "Permanently delete selected duplicate files (not folders)"
+                : "Run a SHA-256 or MD5 duplicate scan before deleting");
     }
 
     private void attachLogListener() {
@@ -1122,6 +1306,7 @@ public final class MainFrame extends JFrame {
             }
             rootsListModel.addElement(chosen);
             rootsList.setSelectedIndex(rootsListModel.size() - 1);
+            persistSession();
         }
     }
 
@@ -1158,12 +1343,12 @@ public final class MainFrame extends JFrame {
                 .build();
     }
 
-    private Set<String> parseExtensionsInput(String rawCsv) {
+    public static Set<String> parseExtensionsInput(String rawCsv) {
         if (rawCsv == null || rawCsv.isBlank()) {
             return Set.of();
         }
         Set<String> result = new HashSet<>();
-        for (String part : rawCsv.split(",")) {
+        for (String part : rawCsv.split("[,;\\s]+")) {
             String clean = part.trim().toLowerCase(Locale.ROOT);
             if (clean.startsWith(".")) {
                 clean = clean.substring(1);
@@ -1175,7 +1360,7 @@ public final class MainFrame extends JFrame {
         return result;
     }
 
-    private boolean matchesDuplicateFilters(
+    public static boolean matchesDuplicateFilters(
             SearchResultItem item,
             Long minBytes,
             Long maxBytes,
@@ -1207,22 +1392,17 @@ public final class MainFrame extends JFrame {
                 String targetName = caseSensitive ? candidate : candidate.toLowerCase(Locale.ROOT);
                 return targetName.contains(query);
             }
-            String modeName = matchMode == null ? "" : matchMode.name().toUpperCase(Locale.ROOT);
             if (compiledPattern != null) {
                 return compiledPattern.matcher(candidate).matches();
             }
             String query = caseSensitive ? nameQuery : nameQuery.toLowerCase(Locale.ROOT);
             String targetName = caseSensitive ? candidate : candidate.toLowerCase(Locale.ROOT);
-            if (modeName.contains("EXACT") || modeName.contains("EQUALS")) {
-                return targetName.equals(query);
-            }
-            if (modeName.contains("START") || modeName.contains("PREFIX")) {
-                return targetName.startsWith(query);
-            }
-            if (modeName.contains("END") || modeName.contains("SUFFIX")) {
-                return targetName.endsWith(query);
-            }
-            return targetName.contains(query);
+            return switch (matchMode != null ? matchMode : MatchMode.CONTAINS) {
+                case EXACT -> targetName.equals(query);
+                case STARTS_WITH -> targetName.startsWith(query);
+                case ENDS_WITH -> targetName.endsWith(query);
+                case CONTAINS, WILDCARD, REGEX -> targetName.contains(query);
+            };
         }
         return true;
     }
@@ -1266,8 +1446,9 @@ public final class MainFrame extends JFrame {
         currentSearchItems.clear();
         searchTableModel.setRowCount(0);
         setBusyState(true, false);
-        progressBar.setIndeterminate(true);
-        progressBar.setString("Scanning...");
+        progressBar.setIndeterminate(false);
+        progressBar.setValue(0);
+        progressBar.setString("0%");
         statusLabel.setText("Searching...");
 
         final boolean enforceLimit = enforceLimitCheck.isSelected();
@@ -1286,7 +1467,13 @@ public final class MainFrame extends JFrame {
                                 this::publish,
                                 prog -> SwingUtilities.invokeLater(() -> {
                                     if (!cancelFlag.get() && !isCancelled()) {
-                                        statusLabel.setText("Scanned: " + prog.scannedEntries()
+                                        int totalRoots = Math.max(1, prog.totalRoots());
+                                        int pct = Math.min(99, (prog.completedRoots() * 100) / totalRoots);
+                                        progressBar.setValue(pct);
+                                        progressBar.setString(pct + "%");
+                                        statusLabel.setText("Root " + Math.min(prog.completedRoots() + 1, totalRoots)
+                                                + "/" + totalRoots
+                                                + " | Scanned: " + prog.scannedEntries()
                                                 + " | Matches: " + prog.matchedEntries()
                                                 + (prog.currentPath().isEmpty() ? "" : " | " + prog.currentPath()));
                                     }
@@ -1325,7 +1512,10 @@ public final class MainFrame extends JFrame {
                             String msg = "Matches: " + summary.matchedCount()
                                     + " (scanned " + summary.scannedCount() + " entries)"
                                     + (summary.cancelled() ? " [Cancelled]" : "")
-                                    + (summary.limitReached() ? " [Display cap reached]" : "");
+                                    + (summary.limitReached()
+                                            ? " | showing " + summary.matchedCount()
+                                            + " of more (capped at " + maxResults + ")"
+                                            : "");
                             statusLabel.setText(msg);
                             logManager.info("Search completed: " + msg);
                         } catch (CancellationException ex) {
@@ -1372,12 +1562,11 @@ public final class MainFrame extends JFrame {
 
             String base = rawQuery == null ? "" : rawQuery;
             effectiveNameQuery = literalName ? base : base.trim();
-            String modeName = matchMode == null ? "" : matchMode.name().toUpperCase(Locale.ROOT);
             if (!literalName && !effectiveNameQuery.isEmpty()) {
                 int flags = caseSensitive ? 0 : Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE;
-                if (modeName.contains("REGEX")) {
+                if (matchMode == MatchMode.REGEX) {
                     compiledPattern = Pattern.compile(effectiveNameQuery, flags);
-                } else if (modeName.contains("WILDCARD") || modeName.contains("GLOB")) {
+                } else if (matchMode == MatchMode.WILDCARD) {
                     compiledPattern = Pattern.compile(wildcardToRegex(effectiveNameQuery), flags);
                 } else {
                     compiledPattern = null;
@@ -1465,7 +1654,12 @@ public final class MainFrame extends JFrame {
                         }
                     }
 
+                    lastDuplicateAlgorithm = algorithm;
                     long totalReclaimable = 0L;
+                    int totalMatchingFiles = 0;
+                    for (DuplicateGroup group : filteredGroups) {
+                        totalMatchingFiles += group.getFiles().size();
+                    }
                     int totalFiles = 0;
                     boolean capped = false;
                     for (DuplicateGroup group : filteredGroups) {
@@ -1495,9 +1689,13 @@ public final class MainFrame extends JFrame {
                     String summary = "Groups: " + filteredGroups.size()
                             + " | Files: " + totalFiles
                             + " | Reclaimable: " + SearchResultItem.formatBytes(totalReclaimable)
-                            + (capped ? " [Display cap reached]" : "");
+                            + (capped
+                                    ? " | showing " + totalFiles + " of " + totalMatchingFiles
+                                    + " (capped at " + maxDisplayed + ")"
+                                    : "");
                     statusLabel.setText(summary);
                     logManager.info("Duplicate scan completed: " + summary);
+                    updateDeleteButtonState(false);
                 } catch (CancellationException ex) {
                     progressBar.setValue(0);
                     progressBar.setString("0%");
@@ -1515,6 +1713,16 @@ public final class MainFrame extends JFrame {
     }
 
     private void deleteSelectedDuplicates() {
+        if (lastDuplicateAlgorithm == null || !lastDuplicateAlgorithm.allowsPermanentDeletion()) {
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Delete is disabled for size-only and head/tail results.\n"
+                            + "Run Find Duplicates with SHA-256 or MD5 before deleting files.",
+                    "Deletion Not Allowed",
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
         int[] selectedViewRows = duplicateTable.getSelectedRows();
         if (selectedViewRows == null || selectedViewRows.length == 0) {
             JOptionPane.showMessageDialog(this, "Select one or more files in the duplicates table first.",
@@ -1754,7 +1962,7 @@ public final class MainFrame extends JFrame {
         startSearchBtn.setEnabled(!busy);
         startDupBtn.setEnabled(!busy);
         selectDupCopiesBtn.setEnabled(!busy);
-        deleteSelectedDupBtn.setEnabled(!busy);
+        updateDeleteButtonState(busy);
         openFileBtn.setEnabled(!busy);
         openFolderBtn.setEnabled(!busy);
         copyPathBtn.setEnabled(!busy);

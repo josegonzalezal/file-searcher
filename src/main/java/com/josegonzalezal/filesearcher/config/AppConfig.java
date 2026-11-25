@@ -11,8 +11,9 @@ import java.nio.file.Paths;
 public final class AppConfig {
 
     public static final String APP_NAME = "File Searcher";
+    public static final String VERSION = "1.0.7";
     public static final String AUTHOR_NAME = "José González Alonso";
-    public static final String GITHUB_URL = "https://github.com/josegonzalezal/";
+    public static final String GITHUB_URL = "https://github.com/josegonzalezal/file-searcher";
     public static final int DEFAULT_DISPLAY_LIMIT = 10_000;
     public static final int STREAM_BUFFER_SIZE = 64 * 1024;
     public static final int PARTIAL_HASH_CHUNK_SIZE = 64 * 1024;

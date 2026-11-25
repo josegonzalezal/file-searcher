@@ -16,4 +16,12 @@ public enum HashAlgorithm {
     public String toString() {
         return label;
     }
+
+    /**
+     * Permanent deletion is only allowed for algorithms that hash file contents.
+     * Size-only and partial (head/tail) matches can group unrelated files.
+     */
+    public boolean allowsPermanentDeletion() {
+        return this == SHA_256 || this == MD5;
+    }
 }

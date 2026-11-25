@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -52,17 +53,19 @@ public final class DuplicateDetectorService {
             BooleanSupplier isCancelled,
             Consumer<DuplicateProgress> onProgress) {
 
-        List<SearchResultItem> regularFiles = collectFiles(
-                roots, skipSymbolicLinks, includeHidden, isCancelled, onProgress);
+        BooleanSupplier cancelCheck = isCancelled != null ? isCancelled : () -> false;
 
-        if (isCancelled.getAsBoolean() || regularFiles.isEmpty()) {
+        List<SearchResultItem> regularFiles = collectFiles(
+                roots, skipSymbolicLinks, includeHidden, cancelCheck, onProgress);
+
+        if (cancelCheck.getAsBoolean() || regularFiles.isEmpty()) {
             return List.of();
         }
 
         // Stage 1: Group by exact file size
         Map<Long, List<SearchResultItem>> bySize = new LinkedHashMap<>();
         for (SearchResultItem file : regularFiles) {
-            if (isCancelled.getAsBoolean()) {
+            if (cancelCheck.getAsBoolean()) {
                 return List.of();
             }
             bySize.computeIfAbsent(file.getSizeBytes(), k -> new ArrayList<>()).add(file);
@@ -81,7 +84,7 @@ public final class DuplicateDetectorService {
         }
 
         if (algorithm == HashAlgorithm.SIZE_ONLY) {
-            return buildGroups(bySize, "SIZE", isCancelled);
+            return buildGroups(bySize, "SIZE", cancelCheck);
         }
 
         // Stage 2: Partial head + tail hash for files larger than chunk size
@@ -90,7 +93,7 @@ public final class DuplicateDetectorService {
         long processed = 0L;
 
         for (SearchResultItem item : sizeCandidates) {
-            if (isCancelled.getAsBoolean()) {
+            if (cancelCheck.getAsBoolean()) {
                 return List.of();
             }
             processed++;
@@ -123,7 +126,7 @@ public final class DuplicateDetectorService {
                     }
                 }
             }
-            return buildGroupsFromMap(byPartialKey, isCancelled);
+            return buildGroupsFromMap(byPartialKey, cancelCheck);
         }
 
         // Stage 3: Full streaming digest (SHA-256 or MD5)
@@ -133,13 +136,16 @@ public final class DuplicateDetectorService {
         processed = 0L;
 
         for (SearchResultItem item : fullHashCandidates) {
-            if (isCancelled.getAsBoolean()) {
+            if (cancelCheck.getAsBoolean()) {
                 return List.of();
             }
             processed++;
             publish(onProgress, jcaAlgorithm + " full hash", processed, total, item.getFullPath());
             try {
-                String digest = computeFullDigest(item.getPath(), jcaAlgorithm);
+                String digest = computeFullDigest(item.getPath(), jcaAlgorithm, cancelCheck);
+                if (digest == null) {
+                    return List.of();
+                }
                 item.setDigest(digest);
                 byFullDigest.computeIfAbsent(digest, k -> new ArrayList<>()).add(item);
             } catch (IOException | NoSuchAlgorithmException ex) {
@@ -147,7 +153,7 @@ public final class DuplicateDetectorService {
             }
         }
 
-        return buildGroupsFromMap(byFullDigest, isCancelled);
+        return buildGroupsFromMap(byFullDigest, cancelCheck);
     }
 
     private List<SearchResultItem> collectFiles(
@@ -212,6 +218,9 @@ public final class DuplicateDetectorService {
                 logManager.error("Error walking directory for duplicates: " + root, ex);
             }
         }
+        if (isCancelled.getAsBoolean()) {
+            return List.of();
+        }
         publish(onProgress, "Collecting files", files.size(), files.size(), "");
         return files;
     }
@@ -236,7 +245,7 @@ public final class DuplicateDetectorService {
         int chunkSize = AppConfig.PARTIAL_HASH_CHUNK_SIZE;
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
-            md.update(Long.toString(sizeBytes).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            md.update(Long.toString(sizeBytes).getBytes(StandardCharsets.UTF_8));
             try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
                 ByteBuffer headBuf = ByteBuffer.allocate((int) Math.min(chunkSize, sizeBytes));
                 while (headBuf.hasRemaining() && channel.read(headBuf) > 0) {
@@ -262,12 +271,16 @@ public final class DuplicateDetectorService {
         }
     }
 
-    private String computeFullDigest(Path file, String jcaAlgorithm) throws IOException, NoSuchAlgorithmException {
+    private String computeFullDigest(Path file, String jcaAlgorithm, BooleanSupplier isCancelled)
+            throws IOException, NoSuchAlgorithmException {
         MessageDigest digest = MessageDigest.getInstance(jcaAlgorithm);
         byte[] buffer = new byte[AppConfig.STREAM_BUFFER_SIZE];
         try (InputStream in = Files.newInputStream(file)) {
             int read;
             while ((read = in.read(buffer)) != -1) {
+                if (isCancelled.getAsBoolean()) {
+                    return null;
+                }
                 digest.update(buffer, 0, read);
             }
         }

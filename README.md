@@ -15,10 +15,11 @@ Please read these warnings before running scans or deleting files:
   - **Result Display Cap:** By default, the UI caps displayed rows (e.g., `10,000` results via **Cap results**) to prevent the Swing table from freezing. Even if more matches exist on disk, only rows up to the cap are rendered in the table.
   - **Deep / Protected System Directories:** Scanning OS-level system directories (such as `C:\Windows`, `System Volume Information`, `/proc`, `/sys`, or `/dev`) may trigger frequent `AccessDeniedException` entries, slow down traversal, or hit OS path-length limits.
 - **Permanent File Deletion (No Recycle Bin / Trash):**
-  - Clicking **Delete Selected** in **Find Duplicates** mode **permanently deletes** files from disk (`Files.deleteIfExists`)—it does **not** move them to the Windows Recycle Bin or macOS/Linux Trash, and the action cannot be undone.
-  - Although File Searcher enforces a safety check requiring at least one copy per duplicate group to remain unselected, always verify the selected paths before confirming deletion.
+  - Clicking **Delete Selected** in **Find Duplicates** mode **permanently deletes** files from disk (`Files.delete`)—it does **not** move them to the Windows Recycle Bin or macOS/Linux Trash, and the action cannot be undone. Directories are never deleted by this action.
+  - **Delete Selected** is enabled only after a **SHA-256** or **MD5** duplicate scan. Size-only and head/tail results are report-only.
+  - A safety check still requires at least one copy per duplicate group to remain unselected. Always verify the selected paths before confirming deletion.
 - **"File size only (fastest)" Duplicate Mode Caution:**
-  - Selecting **File size only (fastest)** groups files solely by identical byte count without comparing file contents. Two completely different files that happen to have the exact same byte size will be grouped together—never delete files based on size-only matching without verifying their contents or running a cryptographic hash (`SHA-256`, `SHA-1`, or `MD5`).
+  - Selecting **File size only (fastest)** groups files solely by identical byte count without comparing file contents. Two completely different files that happen to have the exact same byte size will be grouped together. Deletion is disabled in this mode; rerun with **SHA-256** (or **MD5**) before removing files.
 - **Symbolic Links & Junctions (`Skip symlinks`):**
   - Disabling **Skip symlinks** allows traversal into symbolic links or directory junctions, which can cause duplicate scans of the same directory tree or infinite directory loops on certain file systems. Keep **Skip symlinks** checked unless you specifically need to follow links.
 - **Locked or In-Use Files:**
@@ -44,15 +45,15 @@ Please read these warnings before running scans or deleting files:
 - Configurable search criteria, match modes, literal name toggle, and search targets (`SearchCriteria`, `MatchMode`, `SearchTarget`).
 - Duplicate file detection with selectable comparison/hashing methods (`DuplicateDetectorService`, `HashAlgorithm`, `DuplicateGroup`).
 - File actions, CSV/TXT/LOG exporting, and light/dark Swing theming (`FileActionService`, `ReportExportService`, `MainFrame`).
-- Centralized configuration and logging (`AppConfig`, `LogManager`).
-- Standalone portable runtime package (`portable-runtime`) with launcher scripts (`launch.bat` and `launch.sh`).
+- Centralized configuration, session preferences, and logging (`AppConfig`, `UserPreferences`, `LogManager`).
+- Optional portable JRE zip on GitHub Releases (Windows launcher is `launch.bat` next to the JAR).
 
 ## Requirements
 
 ### Running the Portable Release (Recommended)
 
-- **Operating System:** Windows (x64) for the bundled Windows runtime, or Linux/macOS with a compatible Java runtime when using `launch.sh`.
-- **Java:** Bundled in the portable runtime package (no separate Java installation required when using the included runtime), or a compatible Java runtime if running the JAR directly.
+- **Operating System:** Windows (x64) when using the bundled runtime zip, or any OS with Java 21+ when running the JAR directly.
+- **Java:** Bundled in the Windows portable zip (`bin\javaw.exe`), or a local Java 21 runtime for `java -jar`.
 
 ### Building from Source
 
@@ -63,26 +64,19 @@ Please read these warnings before running scans or deleting files:
 
 ### 1. Download and Extract the Release Archive
 
-1. Download the release archive (for example, `file-searcher-1.0.6.zip` or your platform release zip) from the **Releases** section.
+1. Download the release archive (for example, `file-searcher-1.0.7.zip`) from the **Releases** section of [josegonzalezal/file-searcher](https://github.com/josegonzalezal/file-searcher).
 2. Extract it **once** into a clean destination folder (for example, `C:\Tools\FileSearcher\`). Avoid extracting into a duplicate nested folder path.
 
 ### 2. Launch the Application
 
-#### On Windows
+#### Portable Windows zip
 
-Run `launch.bat` from the portable folder:
+Run `launch.bat` from the extracted folder (it starts `bin\javaw.exe -jar file-searcher-1.0.7.jar`).
+
+#### JAR with a local JDK/JRE 21
 
 ```cmd
-launch.bat
-```
-
-#### On Linux / macOS
-
-Make `launch.sh` executable and run it from the script's directory:
-
-```bash
-chmod +x launch.sh
-./launch.sh
+java -jar target/file-searcher-1.0.7.jar
 ```
 
 ### 3. Building and Running with Maven (Optional)
@@ -90,7 +84,8 @@ chmod +x launch.sh
 From the project root directory:
 
 ```bash
-mvn clean package
+mvn test
+mvn -q exec:java
 ```
 
 ## Guide: How to Use File Searcher
@@ -135,13 +130,14 @@ Click **Search** to start or **Cancel** to stop an active scan.
 Set **Mode** to **Find Duplicates** to locate duplicate files across your target roots:
 
 1. Select your **Search Roots** and any optional filters (**Name / Pattern**, **Literal**, **Min Size / Max Size**, **Extensions**, **Case sensitive**, **Include hidden**, **Skip symlinks**, **Cap results**).
-2. Choose an **Algorithm** from the dropdown (for example, **File size only (fastest)** or cryptographic hash algorithms such as `SHA-256`, `SHA-1`, or `MD5` in `HashAlgorithm`).
+2. Choose an **Algorithm** from the dropdown: **File size only (fastest)**, **Size + Head/Tail hash (fast)**, **SHA-256**, or **MD5**.
 3. Click **Find Duplicates** to scan and group matching files (or **Cancel** to abort).
 
 #### How Each Duplicate Search Method Works
 
-- **File size only (fastest):** Groups candidate files that share the exact same byte length without reading full file contents—fastest for quick passes, though files with the same size aren't guaranteed to be byte-for-byte identical.
-- **Hash-based algorithms (`SHA-256`, `SHA-1`, `MD5`):** Narrows candidates by file size and computes content digests so files with matching hashes have identical byte contents (with `SHA-256` offering the strongest collision resistance and `MD5`/`SHA-1` being legacy hash options).
+- **File size only (fastest):** Groups candidate files that share the exact same byte length without reading full file contents. Delete is disabled.
+- **Size + Head/Tail hash (fast):** Groups same-size files that share a head/tail digest. Faster than a full hash, but not proof of identical contents. Delete is disabled.
+- **SHA-256 / MD5:** After size (and partial) filtering, streams a full-file digest. Matching hashes mean identical bytes (`SHA-256` is preferred; `MD5` is a legacy option).
 
 ### What to Do With Search or Duplicate Results
 
@@ -151,14 +147,13 @@ Set **Mode** to **Find Duplicates** to locate duplicate files across your target
 - **Clean Up Duplicates Safely (in Find Duplicates mode):**
   1. Review the groups shown in the table (**Group / Hash**, **File Name**, **Size**, **Reclaimable**, **Last Modified**, **Full Path**).
   2. Click **Select Duplicates** to automatically select duplicate copies while leaving the first copy in each group unselected—or pick specific rows manually.
-  3. Click **Delete Selected** to permanently delete selected files. A safety check blocks deletion if all copies of any group are selected so at least one copy per group is preserved.
+  3. After a **SHA-256** or **MD5** scan, click **Delete Selected** to permanently delete selected files. Deletion is blocked for size-only/head-tail results, if a directory is selected, or if all copies of any group are selected.
 
 ## Logs & Troubleshooting
 
 - **Logs Panel:** Status updates and scan/error messages appear in the **Logs** pane at the bottom. Use **Export Log** to save logs to a `.log`/`.txt` file or **Clear Log** to clear the log display.
 - **Permission / Access Denied Errors:** Protected system folders or locked files may be skipped; check the logs for details.
-- **`launch.sh: Permission denied`:** Run `chmod +x launch.sh` before running `./launch.sh`.
-- **JAR or Runtime Not Found:** Ensure `launch.bat` / `launch.sh`, your `file-searcher-*.jar`, and the runtime files remain together in the extracted folder and match the configured path.
+- **JAR or Runtime Not Found:** In a portable zip, keep `launch.bat`, `file-searcher-*.jar`, and the `bin` / `lib` runtime folders together. From source, run `mvn -q exec:java` or `java -jar target/file-searcher-1.0.7.jar`.
 
 ## Project Structure
 
@@ -168,7 +163,7 @@ src/main/java/com/josegonzalezal/filesearcher/
 ├── config/
 │   ├── AppConfig.java
 │   ├── LogManager.java
-│   └── ThemePreferences.java
+│   └── UserPreferences.java
 ├── model/
 │   ├── DuplicateGroup.java
 │   ├── HashAlgorithm.java

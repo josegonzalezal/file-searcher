@@ -4,14 +4,14 @@ import com.josegonzalezal.filesearcher.config.LogManager;
 import java.awt.Desktop;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
-import java.util.stream.Stream;
 
 /**
- * Performs safe OS integrations and explicit user-confirmed file/directory operations.
+ * Performs safe OS integrations and explicit user-confirmed file operations.
+ * Duplicate cleanup never recursively deletes directories.
  */
 public final class FileActionService {
 
@@ -63,15 +63,16 @@ public final class FileActionService {
 
         for (Path target : paths) {
             try {
-                if (!Files.exists(target, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
                     errors.add(target + " (does not exist)");
                     continue;
                 }
-                if (Files.isDirectory(target, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-                    deleteDirectoryRecursively(target);
-                } else {
-                    Files.delete(target);
+                if (Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS)) {
+                    errors.add(target + " (directories are not deleted)");
+                    logManager.warn("Skipped directory delete: " + target);
+                    continue;
                 }
+                Files.delete(target);
                 succeeded++;
                 logManager.info("Permanently deleted: " + target);
             } catch (IOException | SecurityException ex) {
@@ -82,14 +83,5 @@ public final class FileActionService {
         }
 
         return new BatchOperationResult(succeeded, errors);
-    }
-
-    private void deleteDirectoryRecursively(Path dir) throws IOException {
-        try (Stream<Path> walk = Files.walk(dir)) {
-            List<Path> sorted = walk.sorted(Comparator.reverseOrder()).toList();
-            for (Path p : sorted) {
-                Files.delete(p);
-            }
-        }
     }
 }

@@ -25,7 +25,12 @@ import java.util.function.Consumer;
  */
 public final class FileSystemScannerService {
 
-    public record ScanProgress(long scannedEntries, int matchedEntries, String currentPath) {
+    public record ScanProgress(
+            long scannedEntries,
+            int matchedEntries,
+            String currentPath,
+            int completedRoots,
+            int totalRoots) {
     }
 
     public record ScanSummary(int matchedCount, long scannedCount, boolean cancelled, boolean limitReached) {
@@ -45,6 +50,7 @@ public final class FileSystemScannerService {
             Consumer<SearchResultItem> onMatch,
             Consumer<ScanProgress> onProgress) {
 
+        BooleanSupplier cancelCheck = isCancelled != null ? isCancelled : () -> false;
         AtomicLong scannedCounter = new AtomicLong(0L);
         AtomicInteger matchedCounter = new AtomicInteger(0);
         AtomicLong lastProgressNanos = new AtomicLong(System.nanoTime());
@@ -53,8 +59,8 @@ public final class FileSystemScannerService {
 
         List<Path> roots = criteria.getRoots();
         for (int i = 0; i < roots.size(); i++) {
-            if (isCancelled.getAsBoolean() || limitReached[0]) {
-                cancelled[0] = isCancelled.getAsBoolean();
+            if (cancelCheck.getAsBoolean() || limitReached[0]) {
+                cancelled[0] = cancelCheck.getAsBoolean();
                 break;
             }
 
@@ -65,6 +71,8 @@ public final class FileSystemScannerService {
             }
 
             logManager.info("Scanning root (" + (i + 1) + "/" + roots.size() + "): " + root);
+            final int completedRoots = i;
+            final int totalRoots = roots.size();
 
             EnumSet<FileVisitOption> options = criteria.isSkipSymbolicLinks()
                     ? EnumSet.noneOf(FileVisitOption.class)
@@ -74,7 +82,7 @@ public final class FileSystemScannerService {
                 Files.walkFileTree(root, options, Integer.MAX_VALUE, new SimpleFileVisitor<>() {
                     @Override
                     public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                        if (isCancelled.getAsBoolean()) {
+                        if (cancelCheck.getAsBoolean()) {
                             cancelled[0] = true;
                             return FileVisitResult.TERMINATE;
                         }
@@ -85,7 +93,9 @@ public final class FileSystemScannerService {
                             return FileVisitResult.SKIP_SUBTREE;
                         }
                         long scanned = scannedCounter.incrementAndGet();
-                        publishProgressIfNeeded(scanned, matchedCounter.get(), dir, onProgress, lastProgressNanos, false);
+                        publishProgressIfNeeded(
+                                scanned, matchedCounter.get(), dir, completedRoots, totalRoots,
+                                onProgress, lastProgressNanos, false);
                         evaluateEntry(dir, true, attrs, criteria, maxResults, enforceLimit,
                                 matchedCounter, limitReached, onMatch);
                         return limitReached[0] ? FileVisitResult.TERMINATE : FileVisitResult.CONTINUE;
@@ -93,26 +103,29 @@ public final class FileSystemScannerService {
 
                     @Override
                     public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                        if (isCancelled.getAsBoolean()) {
+                        if (cancelCheck.getAsBoolean()) {
                             cancelled[0] = true;
                             return FileVisitResult.TERMINATE;
                         }
                         if (limitReached[0]) {
                             return FileVisitResult.TERMINATE;
                         }
-                        long scanned = scannedCounter.incrementAndGet();
-                        publishProgressIfNeeded(scanned, matchedCounter.get(), file, onProgress, lastProgressNanos, false);
-
-                        if (!shouldSkipEntry(file, attrs, criteria)) {
-                            evaluateEntry(file, false, attrs, criteria, maxResults, enforceLimit,
-                                    matchedCounter, limitReached, onMatch);
+                        if (shouldSkipEntry(file, attrs, criteria)) {
+                            return FileVisitResult.CONTINUE;
                         }
+                        long scanned = scannedCounter.incrementAndGet();
+                        publishProgressIfNeeded(
+                                scanned, matchedCounter.get(), file, completedRoots, totalRoots,
+                                onProgress, lastProgressNanos, false);
+
+                        evaluateEntry(file, false, attrs, criteria, maxResults, enforceLimit,
+                                matchedCounter, limitReached, onMatch);
                         return limitReached[0] ? FileVisitResult.TERMINATE : FileVisitResult.CONTINUE;
                     }
 
                     @Override
                     public FileVisitResult visitFileFailed(Path file, IOException exc) {
-                        if (isCancelled.getAsBoolean()) {
+                        if (cancelCheck.getAsBoolean()) {
                             cancelled[0] = true;
                             return FileVisitResult.TERMINATE;
                         }
@@ -123,7 +136,7 @@ public final class FileSystemScannerService {
 
                     @Override
                     public FileVisitResult postVisitDirectory(Path dir, IOException exc) {
-                        if (isCancelled.getAsBoolean()) {
+                        if (cancelCheck.getAsBoolean()) {
                             cancelled[0] = true;
                             return FileVisitResult.TERMINATE;
                         }
@@ -134,17 +147,19 @@ public final class FileSystemScannerService {
                     }
                 });
             } catch (IOException ex) {
-                if (!isCancelled.getAsBoolean()) {
+                if (!cancelCheck.getAsBoolean()) {
                     logManager.error("Failed scanning root: " + root, ex);
                 }
             }
         }
 
-        cancelled[0] = cancelled[0] || isCancelled.getAsBoolean();
+        cancelled[0] = cancelled[0] || cancelCheck.getAsBoolean();
         publishProgressIfNeeded(
                 scannedCounter.get(),
                 matchedCounter.get(),
                 roots.isEmpty() ? Path.of("") : roots.get(roots.size() - 1),
+                roots.size(),
+                roots.size(),
                 onProgress,
                 lastProgressNanos,
                 true);
@@ -210,13 +225,17 @@ public final class FileSystemScannerService {
         }
 
         matchedCounter.incrementAndGet();
-        onMatch.accept(item);
+        if (onMatch != null) {
+            onMatch.accept(item);
+        }
     }
 
     private void publishProgressIfNeeded(
             long scanned,
             int matched,
             Path current,
+            int completedRoots,
+            int totalRoots,
             Consumer<ScanProgress> onProgress,
             AtomicLong lastProgressNanos,
             boolean force) {
@@ -227,7 +246,7 @@ public final class FileSystemScannerService {
         if (force || (now - lastProgressNanos.get()) >= 120_000_000L) {
             lastProgressNanos.set(now);
             String pathStr = current != null ? current.toAbsolutePath().toString() : "";
-            onProgress.accept(new ScanProgress(scanned, matched, pathStr));
+            onProgress.accept(new ScanProgress(scanned, matched, pathStr, completedRoots, totalRoots));
         }
     }
 
